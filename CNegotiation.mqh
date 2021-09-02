@@ -79,9 +79,17 @@ ENUM_OPENORDER_RESULT CNegotiation::OrderOpen(ENUM_ORDER_TYPE order_type,const s
 //+------------------------------------------------------------------+
 bool CNegotiation::VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price)const
   {
+   double used_price=price;
+   if(used_price==0){
+     if(order_type==ORDER_TYPE_BUY)
+       used_price=SymbolInfoDouble(symbol,SYMBOL_ASK);
+     if(order_type==ORDER_TYPE_SELL)
+       used_price=SymbolInfoDouble(symbol,SYMBOL_BID);  
+   }
    double need_margin;
-   if(!OrderCalcMargin(order_type,symbol,volume,price,need_margin))
+   if(!OrderCalcMargin(order_type,symbol,volume,used_price,need_margin)){
       return false;
+   } 
    if(AccountInfoDouble(ACCOUNT_MARGIN_FREE)>need_margin)
       return true;
    return false;
