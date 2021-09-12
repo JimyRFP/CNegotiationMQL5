@@ -3,6 +3,8 @@
 //|                                            Rafael Floriani Pinto |
 //|                           https://www.mql5.com/en/users/rafaelfp |
 //+------------------------------------------------------------------+
+#ifndef CNEGOTIATIONJIMYRFP
+#define CNEGOTIATIONJIMYRFP
 #property copyright "Rafael Floriani Pinto"
 #property link      "https://www.mql5.com/en/users/rafaelfp"
 #include<Trade/Trade.mqh>
@@ -13,6 +15,16 @@ enum ENUM_OPENORDER_RESULT
    OPENORDER_RESULT_TRADEERROR,
 
   };
+enum ENUM_NEGOTIATION_ACTION
+  {
+   NEGOTIATION_ACTION_NONE,
+   NEGOTIATION_ACTION_BUY,
+   NEGOTIATION_ACTION_SELL,
+   NEGOTIATION_ACTION_BUY_LIMIT,
+   NEGOTIATION_ACTION_BUY_STOP,
+   NEGOTIATION_ACTION_SELL_LIMIT,
+   NEGOTIATION_ACTION_SELL_STOP,
+  };
 
 //+------------------------------------------------------------------+
 //|                                                                  |
@@ -20,12 +32,19 @@ enum ENUM_OPENORDER_RESULT
 class CNegotiation
   {
 public:
-                     CNegotiation(ulong expert_magic);
+                     CNegotiation(ulong expert_magic=0);
    void              SetExpertMagic(ulong expert_magic);
    ulong             GetExpertMagic()const {return obj_expert_magic;};
    ENUM_OPENORDER_RESULT OrderOpen(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price=0.0,double sl=0.0,double tp=0.0,const string comment=NULL);
+   ENUM_OPENORDER_RESULT OrderOpen(ENUM_NEGOTIATION_ACTION negotiation_action,const string symbol,double volume,double price=0.0,double sl=0.0,double tp=0.0,const string comment=NULL);
    double            GetClosePositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL)const;
    double            GetOpenPositionsResult(const string symbol=NULL)const;
+   double            GetOACPositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL)const {return (GetClosePositionsResult(start_period,end_period,symbol)+GetOpenPositionsResult(symbol));}
+   bool              CloseOrders(const string symbol=NULL);
+   bool              ClosePositions(const string symbol=NULL);
+   bool              PositionCloseByTicket(ulong ticket);
+   ENUM_ORDER_TYPE   NegotiationActionToOrderType(ENUM_NEGOTIATION_ACTION negotiation_action);
+   bool              CloseOrdersAndPositions(const string symbol=NULL) {return (CloseOrders(symbol)&&ClosePositions(symbol));}
 private:
    //FUNCTIONS
    bool              VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price)const;
@@ -39,7 +58,7 @@ private:
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
-CNegotiation::CNegotiation(ulong expert_magic)
+CNegotiation::CNegotiation(ulong expert_magic=0)
   {
    SetExpertMagic(expert_magic);
   }
@@ -77,6 +96,15 @@ ENUM_OPENORDER_RESULT CNegotiation::OrderOpen(ENUM_ORDER_TYPE order_type,const s
    return OPENORDER_RESULT_OK;
   };
 
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+ENUM_OPENORDER_RESULT CNegotiation::OrderOpen(ENUM_NEGOTIATION_ACTION negotiation_action,const string symbol,double volume,double price=0.000000,double sl=0.000000,double tp=0.000000,const string comment=NULL)
+  {
+   ENUM_ORDER_TYPE order_type=NegotiationActionToOrderType(negotiation_action);
+   return OrderOpen(order_type,symbol,volume,price,sl,tp,comment);
+  }
+
 
 //+------------------------------------------------------------------+
 //|                                                                  |
@@ -107,7 +135,7 @@ double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_
    datetime use_end_period=end_period;
    if(use_end_period==0)
       use_end_period=TimeCurrent();
-   if(!HistorySelect(start_period,end_period))
+   if(!HistorySelect(start_period,use_end_period))
       return 0;
    double result=0;
    ulong ticket;
@@ -130,7 +158,7 @@ double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_
 double CNegotiation::GetOpenPositionsResult(const string symbol=NULL)const
   {
    double result=0;
-   for(int i=0; i<PositionsTotal(); i++)
+   for(int i=PositionsTotal()-1; i>=0; i--)
      {
       if(!PositionSelectByTicket(PositionGetTicket(i)))
          continue;
@@ -143,4 +171,71 @@ double CNegotiation::GetOpenPositionsResult(const string symbol=NULL)const
      }
    return result;
   }
+//+------------------------------------------------------------------+
+bool CNegotiation::CloseOrders(const string symbol=NULL)
+  {
+   ulong ticket;
+   for(int i=OrdersTotal()-1; i>=0; i--)
+     {
+      ticket=OrderGetTicket(i);
+      if(!OrderSelect(ticket))
+         continue;
+      if(OrderGetInteger(ORDER_MAGIC)!=obj_expert_magic)
+         continue;
+      if(symbol!=NULL)
+         if(OrderGetString(ORDER_SYMBOL)!=symbol)
+            continue;
+      obj_trade.OrderDelete(ticket);
+     }
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool CNegotiation::ClosePositions(const string symbol=NULL)
+  {
+   ulong ticket;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      ticket=PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket))
+         continue;
+      if(PositionGetInteger(POSITION_MAGIC)!=obj_expert_magic)
+         continue;
+      if(symbol!=NULL)
+         if(PositionGetString(POSITION_SYMBOL)!=symbol)
+            continue;
+      PositionCloseByTicket(ticket);
+     };
+   return true;
+  }
+
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool CNegotiation::PositionCloseByTicket(ulong ticket)
+  {
+   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+     {
+      return obj_trade.PositionClose(ticket);
+     }
+   if(!PositionSelectByTicket(ticket))
+      return false;
+   const double volume=PositionGetDouble(POSITION_VOLUME);
+   const string symbol=PositionGetString(POSITION_SYMBOL);
+   if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+     {
+      return obj_trade.Sell(volume,symbol);
+     }
+   else
+     {
+      return obj_trade.Buy(volume,symbol);
+     }
+
+   return false;
+
+  };
+#endif
 //+------------------------------------------------------------------+
