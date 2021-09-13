@@ -45,13 +45,16 @@ public:
    bool              PositionCloseByTicket(ulong ticket);
    ENUM_ORDER_TYPE   NegotiationActionToOrderType(ENUM_NEGOTIATION_ACTION negotiation_action);
    bool              CloseOrdersAndPositions(const string symbol=NULL) {return (CloseOrders(symbol)&&ClosePositions(symbol));}
+   int               GetPositionsTotal(const string symbol=NULL);
 private:
    //FUNCTIONS
    bool              VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price)const;
-   ulong             obj_expert_magic;
+
+   bool              IsEAPosition(ulong ticket,const string symbol)const;
+   bool              IsEAOrder(ulong ticket,const string symbol)const;
    //OBJECTS
    CTrade            obj_trade;
-
+   ulong             obj_expert_magic;
 
   };
 
@@ -160,14 +163,8 @@ double CNegotiation::GetOpenPositionsResult(const string symbol=NULL)const
    double result=0;
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
-      if(!PositionSelectByTicket(PositionGetTicket(i)))
-         continue;
-      if(PositionGetInteger(POSITION_MAGIC)!=obj_expert_magic)
-         continue;
-      if(symbol!=NULL)
-         if(PositionGetString(POSITION_SYMBOL)!=symbol)
-            continue;
-      result+=PositionGetDouble(POSITION_PROFIT);
+      if(IsEAPosition(PositionGetTicket(i),symbol))
+         result+=PositionGetDouble(POSITION_PROFIT);
      }
    return result;
   }
@@ -178,14 +175,8 @@ bool CNegotiation::CloseOrders(const string symbol=NULL)
    for(int i=OrdersTotal()-1; i>=0; i--)
      {
       ticket=OrderGetTicket(i);
-      if(!OrderSelect(ticket))
-         continue;
-      if(OrderGetInteger(ORDER_MAGIC)!=obj_expert_magic)
-         continue;
-      if(symbol!=NULL)
-         if(OrderGetString(ORDER_SYMBOL)!=symbol)
-            continue;
-      obj_trade.OrderDelete(ticket);
+      if(IsEAOrder(ticket,symbol))
+         obj_trade.OrderDelete(ticket);
      }
    return true;
   }
@@ -199,14 +190,8 @@ bool CNegotiation::ClosePositions(const string symbol=NULL)
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
       ticket=PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket))
-         continue;
-      if(PositionGetInteger(POSITION_MAGIC)!=obj_expert_magic)
-         continue;
-      if(symbol!=NULL)
-         if(PositionGetString(POSITION_SYMBOL)!=symbol)
-            continue;
-      PositionCloseByTicket(ticket);
+      if(IsEAPosition(ticket,symbol))
+         PositionCloseByTicket(ticket);
      };
    return true;
   }
@@ -237,5 +222,69 @@ bool CNegotiation::PositionCloseByTicket(ulong ticket)
    return false;
 
   };
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE CNegotiation::NegotiationActionToOrderType(ENUM_NEGOTIATION_ACTION negotiation_action)
+  {
+   switch(negotiation_action)
+     {
+      case NEGOTIATION_ACTION_BUY:
+         return ORDER_TYPE_BUY;
+      case NEGOTIATION_ACTION_SELL:
+         return ORDER_TYPE_SELL;
+      case NEGOTIATION_ACTION_BUY_LIMIT:
+         return ORDER_TYPE_BUY_LIMIT;
+      case NEGOTIATION_ACTION_BUY_STOP:
+         return ORDER_TYPE_BUY_STOP;
+      case NEGOTIATION_ACTION_SELL_LIMIT:
+         return ORDER_TYPE_SELL_LIMIT;
+      case NEGOTIATION_ACTION_SELL_STOP:
+         return ORDER_TYPE_SELL_STOP;
+     }
+   return -1;
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+int CNegotiation::GetPositionsTotal(const string symbol=NULL)
+  {
+   int total_positions=0;
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      if(IsEAPosition(PositionGetTicket(i),symbol))
+         total_positions++;
+     }
+   return total_positions;
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool CNegotiation::IsEAPosition(ulong ticket,const string symbol)const
+  {
+   if(!PositionSelectByTicket(ticket))
+      return false;
+   if(PositionGetInteger(POSITION_MAGIC)!=obj_expert_magic)
+      return false;
+   if(symbol!=NULL)
+      if(PositionGetString(POSITION_SYMBOL)!=symbol)
+         return false;
+   return true;
+  }
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+bool CNegotiation::IsEAOrder(ulong ticket,const string symbol)const
+  {
+   if(!OrderSelect(ticket))
+      return false;
+   if(OrderGetInteger(ORDER_MAGIC)!=obj_expert_magic)
+      return false;
+   if(symbol!=NULL)
+      if(OrderGetString(ORDER_SYMBOL)!=symbol)
+         return false;
+   return true;
+  }
 #endif
 //+------------------------------------------------------------------+
