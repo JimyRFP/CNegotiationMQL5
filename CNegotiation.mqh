@@ -33,7 +33,7 @@ struct struct_position_info
    double            max_price;
    double            last_partial_price;
    double            breakeven_price;
-   double            trailing_stop_last_price;
+   double            trailing_stop_start_stop;
   };
 
 
@@ -105,7 +105,7 @@ public:
    int               UpdateActivePositions();
    bool              DecreasePositionVolume(ulong ticket,double decrease_volume);
    void              VerifyBreakEven(double distance_price,const string symbol=NULL);
-   void              VerifyTrailingStop(double trigger_distance,double move_distance,double pass_distance);
+   void              VerifyTrailingStop(double trigger_distance,double move_distance,double pass_distance,const string symbol);
 private:
    //FUNCTIONS
    bool              VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price)const;
@@ -442,7 +442,6 @@ bool CNegotiation::RegisterNewActivePosition(ulong ticket,struct_position_info &
    dst.ticket=ticket;
    dst.entry_time=(datetime)PositionGetInteger(POSITION_TIME);
    dst.min_price=dst.max_price=PositionGetDouble(POSITION_PRICE_CURRENT);
-
    return true;
   }
 
@@ -475,7 +474,7 @@ void CNegotiation::PrintActivePositions(void)
       printf("Position MinPrice %f",obj_positions_active[i].min_price);
       printf("Position MaxPrice %f",obj_positions_active[i].max_price);
       printf("Position Partial Price %f",obj_positions_active[i].last_partial_price);
-      printf("Position ts price %f",obj_positions_active[i].trailing_stop_last_price);
+      printf("Position ts price %f",obj_positions_active[i].trailing_stop_start_stop);
       printf("Positions be price %f",obj_positions_active[i].breakeven_price);
      };
   }
@@ -586,50 +585,91 @@ void CNegotiation::VerifyPositionBreakEven(struct_position_info &position,double
    obj_trade.PositionModify(position.ticket,position_entry_price,PositionGetDouble(POSITION_TP));
 
   }
-  
-void CNegotiation::VerifyBreakEven(double distance_price,const string symbol=NULL){
-  for(int i=0;i<ArraySize(obj_positions_active);i++){
-    if(!IsEAPosition(obj_positions_active[i].ticket,symbol))
-      continue;
-    double be_price=PositionGetDouble(POSITION_PRICE_OPEN);
-    if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY){
-      be_price+=distance_price;
-    }else{
-      be_price-=distance_price;
-    }    
-    VerifyPositionBreakEven(obj_positions_active[i],be_price);
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void CNegotiation::VerifyBreakEven(double distance_price,const string symbol=NULL)
+  {
+   for(int i=0; i<ArraySize(obj_positions_active); i++)
+     {
+      if(!IsEAPosition(obj_positions_active[i].ticket,symbol))
+         continue;
+      double be_price=PositionGetDouble(POSITION_PRICE_OPEN);
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+        {
+         be_price+=distance_price;
+        }
+      else
+        {
+         be_price-=distance_price;
+        }
+      VerifyPositionBreakEven(obj_positions_active[i],be_price);
+     }
   }
-}  
 
 
-void CNegotiation::VerifyPositionTrailingStop(struct_position_info &position,double trigger_price,double trailing_move,double trailing_pass){
-  double new_sl=PositionGetDouble(POSITION_SL);
-  if(new_sl<=0)
-    return;  
-  double market_price;  
-  if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY){
-    market_price=SymbolInfoDouble(PositionGetString(POSITION_SYMBOL),SYMBOL_BID);
-    if(position.trailing_stop_last_price>=market_price)
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void CNegotiation::VerifyPositionTrailingStop(struct_position_info &position,double trigger_price,double trailing_move,double trailing_pass)
+  {
+   double new_sl=PositionGetDouble(POSITION_SL);
+   if(new_sl<=0)
       return;
-    if(trigger_price>market_price)
-      return;  
-    if(market_price-position.trailing_stop_last_price<trailing_move)
-      return;    
-    new_sl+=trailing_pass;  
-  }else{  
-    market_price=SymbolInfoDouble(PositionGetString(POSITION_SYMBOL),SYMBOL_ASK);
-    if(position.trailing_stop_last_price!=0 && position.trailing_stop_last_price<=market_price)
+   if(trailing_move<=0)
       return;
-    if(trigger_price<market_price)
-      return;
-    if(position.trailing_stop_last_price!=0)  
-      if(position.trailing_stop_last_price-market_price<trailing_move)
-        return;    
-    new_sl-=trailing_pass;    
+   double market_price;
+   if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+     {
+      market_price=SymbolInfoDouble(PositionGetString(POSITION_SYMBOL),SYMBOL_BID);
+      if(market_price<trigger_price)
+         return;
+      int trailing_level=(int)((market_price-trigger_price)/trailing_move);
+      if(position.trailing_stop_start_stop==0){
+        position.trailing_stop_start_stop=PositionGetDouble(POSITION_SL);
+      }
+      new_sl=position.trailing_stop_start_stop+trailing_pass*trailing_level;
+      if(PositionGetDouble(POSITION_SL)>=new_sl)
+         return;
+     }
+   else
+     {
+      market_price=SymbolInfoDouble(PositionGetString(POSITION_SYMBOL),SYMBOL_ASK);
+      if(market_price>trigger_price)
+         return;
+      int trailing_level=(int)((trigger_price-market_price)/trailing_move);   
+      if(position.trailing_stop_start_stop==0){
+        position.trailing_stop_start_stop=PositionGetDouble(POSITION_SL);
+      }
+      new_sl=position.trailing_stop_start_stop-trailing_pass*trailing_level;
+      if(PositionGetDouble(POSITION_SL)<=new_sl)
+         return;
+     }
+   obj_trade.PositionModify(position.ticket,new_sl,PositionGetDouble(POSITION_TP));
+
+
   }
-  if(obj_trade.PositionModify(position.ticket,new_sl,PositionGetDouble(POSITION_TP)))
-    position.trailing_stop_last_price=market_price;
-
-}
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void CNegotiation::VerifyTrailingStop(double trigger_distance,double move_distance,double pass_distance,const string symbol)
+  {
+   for(int i=0; i<ArraySize(obj_positions_active); i++)
+     {
+      if(!IsEAPosition(obj_positions_active[i].ticket,symbol))
+         return;
+      double trigger_price=PositionGetDouble(POSITION_PRICE_OPEN);
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+        {
+         trigger_price+=trigger_distance;
+        }
+      else
+        {
+         trigger_price-=trigger_distance;
+        }
+      VerifyPositionTrailingStop(obj_positions_active[i],trigger_price,move_distance,pass_distance);
+     }
+  }
 #endif
 //+------------------------------------------------------------------+
