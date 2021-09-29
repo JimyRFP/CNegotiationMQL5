@@ -39,6 +39,12 @@ struct struct_position_info
 
 namespace NSNegotiation
 {
+struct struct_cnegotiation_info{
+ double last_close_positions_result;
+ int last_deals_total;
+};
+
+
 double GetMarketPriceByAction(ENUM_NEGOTIATION_ACTION action,const string symbol)
   {
    switch(action)
@@ -58,6 +64,17 @@ double GetSLPriceByAction(ENUM_NEGOTIATION_ACTION action,double entry_price,doub
          return entry_price-sl_distance;
       case NEGOTIATION_ACTION_SELL:
          return entry_price+sl_distance;
+     }
+   return -1;
+  }
+double GetTPPriceByAction(ENUM_NEGOTIATION_ACTION action,double entry_price,double tp_distance)
+  {
+   switch(action)
+     {
+      case NEGOTIATION_ACTION_BUY:
+         return entry_price+tp_distance;
+      case NEGOTIATION_ACTION_SELL:
+         return entry_price-tp_distance;
      }
    return -1;
   }
@@ -89,9 +106,9 @@ public:
    ulong             GetExpertMagic()const {return obj_expert_magic;};
    ENUM_OPENORDER_RESULT OrderOpen(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price=0.0,double sl=0.0,double tp=0.0,const string comment=NULL);
    ENUM_OPENORDER_RESULT OrderOpen(ENUM_NEGOTIATION_ACTION negotiation_action,const string symbol,double volume,double price=0.0,double sl=0.0,double tp=0.0,const string comment=NULL);
-   double            GetClosePositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL)const;
+   double            GetClosePositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL);
    double            GetOpenPositionsResult(const string symbol=NULL)const;
-   double            GetOACPositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL)const {return (GetClosePositionsResult(start_period,end_period,symbol)+GetOpenPositionsResult(symbol));}
+   double            GetOACPositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL) {return (GetClosePositionsResult(start_period,end_period,symbol)+GetOpenPositionsResult(symbol));}
    bool              CloseOrders(const string symbol=NULL);
    bool              ClosePositions(const string symbol=NULL);
    bool              PositionCloseByTicket(ulong ticket);
@@ -106,6 +123,8 @@ public:
    bool              DecreasePositionVolume(ulong ticket,double decrease_volume);
    void              VerifyBreakEven(double distance_price,const string symbol=NULL);
    void              VerifyTrailingStop(double trigger_distance,double move_distance,double pass_distance,const string symbol);
+   void              SetDesviationMax(ulong desviation) {obj_trade.SetDeviationInPoints(desviation);}
+   void              Reset();
 private:
    //FUNCTIONS
    bool              VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price)const;
@@ -122,6 +141,7 @@ private:
    CTrade            obj_trade;
    ulong             obj_expert_magic;
    struct_position_info obj_positions_active[];
+   NSNegotiation::struct_cnegotiation_info obj_info;
 
 
   };
@@ -132,6 +152,7 @@ private:
 CNegotiation::CNegotiation(ulong expert_magic=0)
   {
    SetExpertMagic(expert_magic);
+   Reset();
   }
 
 //+------------------------------------------------------------------+
@@ -142,7 +163,9 @@ void CNegotiation::SetExpertMagic(ulong expert_magic)
    obj_expert_magic=expert_magic;
    obj_trade.SetExpertMagicNumber(obj_expert_magic);
   }
-
+void CNegotiation::Reset(){
+ ZeroMemory(obj_info);
+}
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
@@ -201,7 +224,7 @@ bool CNegotiation::VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string sym
   }
 
 //+------------------------------------------------------------------+
-double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL)const
+double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_period=0,const string symbol=NULL)
   {
    datetime use_end_period=end_period;
    if(use_end_period==0)
@@ -210,7 +233,10 @@ double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_
       return 0;
    double result=0;
    ulong ticket;
-   for(int i=0; i<HistoryDealsTotal(); i++)
+   int deals_total=HistoryDealsTotal();
+   if(deals_total==obj_info.last_deals_total)
+     return obj_info.last_close_positions_result;
+   for(int i=0; i<deals_total; i++)
      {
       ticket=HistoryDealGetTicket(i);
       if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=obj_expert_magic)
@@ -220,6 +246,8 @@ double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_
             continue;
       result+=HistoryDealGetDouble(ticket,DEAL_PROFIT);
      }
+   obj_info.last_deals_total=deals_total;
+   obj_info.last_close_positions_result=result;  
    return result;
   }
 
@@ -507,6 +535,8 @@ void CNegotiation::VerifyPartial(double decrease_volume,double price_distance,co
 //+------------------------------------------------------------------+
 void CNegotiation::VerifyPositionPartial(struct_position_info &position,double partial_price,double decrease_volume)
   {
+   if(decrease_volume<=0)
+      return;
    double market_price;
    if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
      {
@@ -626,9 +656,10 @@ void CNegotiation::VerifyPositionTrailingStop(struct_position_info &position,dou
       if(market_price<trigger_price)
          return;
       int trailing_level=(int)((market_price-trigger_price)/trailing_move);
-      if(position.trailing_stop_start_stop==0){
-        position.trailing_stop_start_stop=PositionGetDouble(POSITION_SL);
-      }
+      if(position.trailing_stop_start_stop==0)
+        {
+         position.trailing_stop_start_stop=PositionGetDouble(POSITION_SL);
+        }
       new_sl=position.trailing_stop_start_stop+trailing_pass*trailing_level;
       if(PositionGetDouble(POSITION_SL)>=new_sl)
          return;
@@ -638,10 +669,11 @@ void CNegotiation::VerifyPositionTrailingStop(struct_position_info &position,dou
       market_price=SymbolInfoDouble(PositionGetString(POSITION_SYMBOL),SYMBOL_ASK);
       if(market_price>trigger_price)
          return;
-      int trailing_level=(int)((trigger_price-market_price)/trailing_move);   
-      if(position.trailing_stop_start_stop==0){
-        position.trailing_stop_start_stop=PositionGetDouble(POSITION_SL);
-      }
+      int trailing_level=(int)((trigger_price-market_price)/trailing_move);
+      if(position.trailing_stop_start_stop==0)
+        {
+         position.trailing_stop_start_stop=PositionGetDouble(POSITION_SL);
+        }
       new_sl=position.trailing_stop_start_stop-trailing_pass*trailing_level;
       if(PositionGetDouble(POSITION_SL)<=new_sl)
          return;
