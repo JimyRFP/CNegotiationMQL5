@@ -49,6 +49,8 @@ struct struct_cnegotiation_info
   {
    double            last_close_positions_result;
    int               last_deals_total;
+   datetime          last_deals_start_time;
+   
   };
 
 
@@ -146,16 +148,28 @@ public:
    void              Reset();
    void              VerifyAveragePrice(double distance,double price_entry,double volume_step,double volume_max,double takeprofit_distance,const string symbol=NULL);
    double            GetVolumeOpenPositionsTotal(const string symbol=NULL);
-   bool              ThereOrderAtPrice(double price,ENUM_ORDER_TYPE order_type,const string symbol=NULL);
+   bool              ThereOrderAtPrice(double price,ENUM_ORDER_TYPE order_type,double tolereance,const string symbol=NULL);
+   void              AveragePriceControl(ENUM_AVERAGEPRICE_DIRECTION direction,
+                                         ENUM_NEGOTIATION_ACTION action,
+                                         double price_base,
+                                         double pass,
+                                         double volume_entry,
+                                         double volume_step,
+                                         double volume_max,
+                                         double takeprofit_price,
+                                         const string symbol
+                                        );
+
    void              AveragePriceSetOrders(ENUM_AVERAGEPRICE_DIRECTION direction,
                                            ENUM_NEGOTIATION_ACTION action,
                                            double price_base,
                                            double pass,
-                                           double volume_entry,
                                            double volume_step,
-                                           double volume_max,
-                                           const string symbol
-                                          );
+                                           int price_level,
+                                           int volume_opened_level,
+                                           int direction_normalize,
+                                           const string symbol);
+  void              AveragePriceCloseInvalidOrders(ENUM_ORDER_TYPE order_type,double order_price,double tolerance,const string symbol);                                         
 private:
    //FUNCTIONS
    bool              VerifyOrderMargin(ENUM_ORDER_TYPE order_type,const string symbol,double volume,double price)const;
@@ -169,22 +183,22 @@ private:
    void              VerifyPositionBreakEven(struct_position_info&position,double be_price);
    void              VerifyPositionTrailingStop(struct_position_info&position,double trigger_price,double move_distance,double pass_distance);
    void              AveragePriceCloseProfitPositions(ENUM_NEGOTIATION_ACTION action,
-                                                      double takeprofit_price,
-                                                      double price_base,
-                                                      double pass,
-                                                      double volume_step,
-                                                      int    volume_level,
-                                                      const string symbol);
+         double takeprofit_price,
+         double price_base,
+         double pass,
+         double volume_step,
+         int    volume_level,
+         const string symbol);
    void              AveragePriceCloseProfitPositionsHedging(double takeprofit,const string symbol);
    void              AveragePriceCloseProfitPositionsNetting(ENUM_NEGOTIATION_ACTION action,
-                                                             int volume_level,
-                                                             double price_base,
-                                                             double price_current,
-                                                             double order_pass,
-                                                             double takeprofit_price,
-                                                             double volume_step,
-                                                             const string symbol
-                                                             );
+         int volume_level,
+         double price_base,
+         double price_current,
+         double order_pass,
+         double takeprofit_price,
+         double volume_step,
+         const string symbol
+                                                            );
    //OBJECTS
    CTrade            obj_trade;
    ulong             obj_expert_magic;
@@ -288,7 +302,7 @@ double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_
    double result=0;
    ulong ticket;
    int deals_total=HistoryDealsTotal();
-   if(deals_total==obj_info.last_deals_total)
+   if(deals_total==obj_info.last_deals_total && obj_info.last_deals_start_time==start_period)
       return obj_info.last_close_positions_result;
    for(int i=0; i<deals_total; i++)
      {
@@ -298,10 +312,11 @@ double CNegotiation::GetClosePositionsResult(datetime start_period,datetime end_
       if(symbol!=NULL)
          if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=symbol)
             continue;
-      result+=HistoryDealGetDouble(ticket,DEAL_PROFIT);
+      result+=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_COMMISSION);
      }
    obj_info.last_deals_total=deals_total;
    obj_info.last_close_positions_result=result;
+   obj_info.last_deals_start_time=start_period;
    return result;
   }
 
@@ -764,7 +779,7 @@ void CNegotiation::VerifyTrailingStop(double trigger_distance,double move_distan
 double CNegotiation::GetVolumeOpenPositionsTotal(const string symbol=NULL)
   {
    ulong ticket;
-   double volume_total;
+   double volume_total=0;
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
       ticket=PositionGetTicket(i);
@@ -778,20 +793,21 @@ double CNegotiation::GetVolumeOpenPositionsTotal(const string symbol=NULL)
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
-void CNegotiation::AveragePriceSetOrders(ENUM_AVERAGEPRICE_DIRECTION direction,
-                                                          ENUM_NEGOTIATION_ACTION action,
-                                                          double price_base,
-                                                          double pass,
-                                                          double volume_entry,
-                                                          double volume_step,
-                                                          double volume_max,
-                                                          const string symbol
-                                                                            )
+void CNegotiation::AveragePriceControl(ENUM_AVERAGEPRICE_DIRECTION direction,
+                                       ENUM_NEGOTIATION_ACTION action,
+                                       double price_base,
+                                       double pass,
+                                       double volume_entry,
+                                       double volume_step,
+                                       double volume_max,
+                                       double takeprofit_price,
+                                       const string symbol)
   {
-   double volume_current=GetVolumeOpenPositionsTotal(symbol);
-   if(volume_current+volume_step>volume_max)
-      return;
+   double volume_current=GetVolumeOpenPositionsTotal(symbol);   
    if(pass<=0)
+      return;
+   int volume_opened_level=(int)((volume_current-volume_entry)/volume_step);
+   if(volume_opened_level<0)
       return;
    double price_current=NSNegotiation::GetMarketPriceByAction(action,symbol);
    int price_level=(int)((price_current-price_base)/pass);
@@ -799,11 +815,27 @@ void CNegotiation::AveragePriceSetOrders(ENUM_AVERAGEPRICE_DIRECTION direction,
    if(direction==AVERAGEPRICE_DIRECTION_DOWN)
       direction_normalize=-1;
    price_level*=direction_normalize;
-   if(price_level<0)
-      return;
-   int volume_opened_level=(int)((volume_current-volume_entry)/volume_step);
-   if(volume_opened_level<0)
-      return;
+   if(volume_current+volume_step<volume_max)
+      AveragePriceSetOrders(direction,action,price_base,pass,volume_step,price_level,volume_opened_level,direction_normalize,symbol);
+   if(takeprofit_price>0)
+      AveragePriceCloseProfitPositions(action,takeprofit_price,price_base,pass,volume_step,volume_opened_level,symbol);
+
+  }
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+void CNegotiation::AveragePriceSetOrders(ENUM_AVERAGEPRICE_DIRECTION direction,
+      ENUM_NEGOTIATION_ACTION action,
+      double price_base,
+      double pass,
+      double volume_step,
+      int price_level,
+      int volume_opened_level,
+      int direction_normalize,
+      const string symbol)
+  {
+
    ENUM_ORDER_TYPE order_type;
 
    if(action==NEGOTIATION_ACTION_BUY)
@@ -828,20 +860,20 @@ void CNegotiation::AveragePriceSetOrders(ENUM_AVERAGEPRICE_DIRECTION direction,
          order_type=ORDER_TYPE_SELL_STOP;
         }
      }
-   double order_price;
-   for(int i=price_level; i>=volume_opened_level; i--)
-     {
-      order_price=price_base+((1+i)*pass*direction_normalize);
-      if(ThereOrderAtPrice(order_price,order_type,symbol))
-         continue;
-      OrderOpen(order_type,symbol,volume_step,order_price);
-     }
+   double order_price=0;  
+   if(price_level>=volume_opened_level){
+     order_price=price_base+((price_level+1)*pass*direction_normalize);
+     if(!ThereOrderAtPrice(order_price,order_type,pass/2,symbol))
+       OrderOpen(order_type,symbol,volume_step,order_price);
+   }
+   if(order_price>0)     
+     AveragePriceCloseInvalidOrders(order_type,order_price,pass/2,symbol);    
   }
 
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
-bool CNegotiation::ThereOrderAtPrice(double price,ENUM_ORDER_TYPE order_type,const string symbol=NULL)
+bool CNegotiation::ThereOrderAtPrice(double price,ENUM_ORDER_TYPE order_type,double tolerance,const string symbol=NULL)
   {
    ulong ticket;
    for(int i=OrdersTotal()-1; i>=0; i--)
@@ -851,7 +883,7 @@ bool CNegotiation::ThereOrderAtPrice(double price,ENUM_ORDER_TYPE order_type,con
          continue;
       if(OrderGetInteger(ORDER_TYPE)!=order_type)
          continue;
-      if(OrderGetDouble(ORDER_PRICE_OPEN)==price)
+      if(OrderGetDouble(ORDER_PRICE_OPEN)>price-tolerance && OrderGetDouble(ORDER_PRICE_OPEN)<price+tolerance)
          return true;
      }
    return false;
@@ -861,13 +893,12 @@ bool CNegotiation::ThereOrderAtPrice(double price,ENUM_ORDER_TYPE order_type,con
 //|                                                                  |
 //+------------------------------------------------------------------+
 void CNegotiation::AveragePriceCloseProfitPositions(ENUM_NEGOTIATION_ACTION action,
-                                                    double takeprofit_price,
-                                                    double price_base,
-                                                    double pass,
-                                                    double volume_step,
-                                                    int    volume_level,
-                                                    const string symbol
-                                                    )
+      double takeprofit_price,
+      double price_base,
+      double pass,
+      double volume_step,
+      int    volume_level,
+      const string symbol)
   {
    double price_current=NSNegotiation::GetMarketPriceByAction(action,symbol);
    if(obj_account_margin_mode==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
@@ -908,8 +939,7 @@ void CNegotiation::AveragePriceCloseProfitPositionsNetting(ENUM_NEGOTIATION_ACTI
       double order_pass,
       double takeprofit_price,
       double volume_step,
-      const string symbol
-                                                          )
+      const string symbol)
   {
    if(volume_level<=0)
       return;
@@ -922,16 +952,43 @@ void CNegotiation::AveragePriceCloseProfitPositionsNetting(ENUM_NEGOTIATION_ACTI
       price_close=price_base-(order_pass*i*action_normalize)+(takeprofit_price*action_normalize);
       if(action==NEGOTIATION_ACTION_BUY)
         {
-         if(price_current<price_close)
-            break;
+         if(price_current<price_close){
+            if(!ThereOrderAtPrice(price_close,ORDER_TYPE_SELL_LIMIT,order_pass/2,symbol)){
+              OrderOpen(ORDER_TYPE_SELL_LIMIT,symbol,volume_step,price_close);
+            }
+            continue;
+         }   
+         if(price_close+order_pass/2>price_current)
+           continue;
         }
       else
         {
-         if(price_current>price_close)
-            break;
+         if(price_current>price_close){
+            if(!ThereOrderAtPrice(price_close,ORDER_TYPE_BUY_LIMIT,order_pass/2,symbol)){
+              OrderOpen(ORDER_TYPE_BUY_LIMIT,symbol,volume_step,price_close);
+            }
+            continue;   
+         }
+         if(price_close-order_pass/2<price_current)
+            continue;
         }
       OrderOpen(NSNegotiation::ActionOpposed(action),symbol,volume_step);
      }
   }
+void CNegotiation::AveragePriceCloseInvalidOrders(ENUM_ORDER_TYPE order_type,double order_price,double tolerance,const string symbol){
+ ulong ticket;
+ double order_current_price;
+ for(int i=OrdersTotal()-1;i>=0;i--){
+   ticket=OrderGetTicket(i);
+   if(!IsEAOrder(ticket,symbol))
+     continue;
+   if(OrderGetInteger(ORDER_TYPE)!=order_type)
+     continue;
+   order_current_price=OrderGetDouble(ORDER_PRICE_OPEN);
+   if(order_current_price<order_price+tolerance && order_current_price>order_price-tolerance)
+    continue;
+   obj_trade.OrderDelete(ticket);     
+ }
+}  
 #endif
 //+------------------------------------------------------------------+
