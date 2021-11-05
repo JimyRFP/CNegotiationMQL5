@@ -189,7 +189,7 @@ private:
          double volume_step,
          int    volume_level,
          const string symbol);
-   void              AveragePriceCloseProfitPositionsHedging(double takeprofit,const string symbol);
+   void              AveragePriceCloseProfitPositionsHedging(double entry_price,double tolerance,double takeprofit_price,const string symbol);
    void              AveragePriceCloseProfitPositionsNetting(ENUM_NEGOTIATION_ACTION action,
          int volume_level,
          double price_base,
@@ -903,8 +903,8 @@ void CNegotiation::AveragePriceCloseProfitPositions(ENUM_NEGOTIATION_ACTION acti
    double price_current=NSNegotiation::GetMarketPriceByAction(action,symbol);
    if(obj_account_margin_mode==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
      {
-      double takeprofit=takeprofit_price*volume_step*SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_LOSS)/SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-      AveragePriceCloseProfitPositionsHedging(takeprofit,symbol);
+   
+      AveragePriceCloseProfitPositionsHedging(price_base,pass/2,takeprofit_price,symbol);
      }
    else
      {
@@ -916,16 +916,28 @@ void CNegotiation::AveragePriceCloseProfitPositions(ENUM_NEGOTIATION_ACTION acti
 //+------------------------------------------------------------------+
 //|                                                                  |
 //+------------------------------------------------------------------+
-void CNegotiation::AveragePriceCloseProfitPositionsHedging(double takeprofit,const string symbol)
+void CNegotiation::AveragePriceCloseProfitPositionsHedging(double entry_price,double tolerance,double takeprofit_price,const string symbol)
   {
    ulong ticket;
+   double position_tp=0;
+   
    for(int i=PositionsTotal()-1; i>=0; i--)
      {
       ticket=PositionGetTicket(i);
       if(!IsEAPosition(ticket,symbol))
          continue;
-      if(PositionGetDouble(POSITION_PROFIT)>=takeprofit)
-         PositionCloseByTicket(ticket);
+      position_tp=PositionGetDouble(POSITION_TP);
+      if(position_tp>0)
+        continue;
+      double price_open=PositionGetDouble(POSITION_PRICE_OPEN);  
+      if(price_open<=entry_price+tolerance && price_open>=entry_price-tolerance)
+        continue;
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY){
+        position_tp=price_open+takeprofit_price;
+      }else{
+        position_tp=price_open-takeprofit_price;
+      }  
+      obj_trade.PositionModify(ticket,PositionGetDouble(POSITION_SL),position_tp);      
      }
   }
 
